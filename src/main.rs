@@ -1,3 +1,5 @@
+mod github;
+
 use fuse::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory,
     ReplyEntry, Request,
@@ -8,9 +10,12 @@ use std::env;
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
+use structopt::StructOpt;
+
+use crate::github::GitHub;
 
 #[derive(Debug, Snafu)]
-pub enum Error {
+enum Error {
     #[snafu(display("Need mount path as first argument"))]
     MissingMountPoint,
 
@@ -19,6 +24,30 @@ pub enum Error {
         mountpoint: PathBuf,
         source: std::io::Error,
     },
+}
+
+#[derive(Debug, StructOpt)]
+#[structopt(name = "ghafuse", about = "Options for ghafuse")]
+struct Opt {
+    /// Mount path to mount GitHub releases listing on
+    #[structopt(parse(from_os_str))]
+    mount_path: PathBuf,
+
+    /// Repository owner to target
+    #[structopt()]
+    owner: String,
+
+    /// Repository name to target
+    #[structopt()]
+    repo: String,
+
+    /// Username to add as part of credentials
+    #[structopt(short = "u")]
+    username: String,
+
+    /// Password to add as part of credentials
+    #[structopt(short = "p")]
+    password: String,
 }
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -129,9 +158,10 @@ impl Filesystem for HelloFS {
 }
 
 fn inner_main() -> Result<(), Error> {
-    let mountpoint = env::args_os().nth(1).context(MissingMountPoint)?;
-    fuse::mount(HelloFS, &mountpoint, &[])
-        .context(InvalidMount { mountpoint })?;
+    let opt = Opt::from_args();
+    fuse::mount(HelloFS, &opt.mount_path, &[]).context(InvalidMount {
+        mountpoint: &opt.mount_path,
+    })?;
 
     Ok(())
 }
