@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 use structopt::StructOpt;
 
-use crate::github::GitHub;
+use crate::github::{Credentials, GitHub};
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -43,11 +43,11 @@ struct Opt {
 
     /// Username to add as part of credentials
     #[structopt(short = "u")]
-    username: String,
+    username: Option<String>,
 
     /// Password to add as part of credentials
     #[structopt(short = "p")]
-    password: String,
+    password: Option<String>,
 }
 
 const TTL: Duration = Duration::from_secs(1); // 1 second
@@ -88,9 +88,19 @@ const HELLO_TXT_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
-struct HelloFS;
+struct GhaFs {
+    state: GitHub,
+    owner: String,
+    repo: String,
+}
 
-impl Filesystem for HelloFS {
+impl GhaFs {
+    fn new(state: GitHub, owner: String, repo: String) -> GhaFs {
+        GhaFs { state, owner, repo }
+    }
+}
+
+impl Filesystem for GhaFs {
     fn lookup(
         &mut self,
         _req: &Request,
@@ -98,7 +108,10 @@ impl Filesystem for HelloFS {
         name: &OsStr,
         reply: ReplyEntry,
     ) {
-        if parent == 1 && name.to_str() == Some("hello.txt") {
+        if parent == 1
+            && name.to_str() != Some(".")
+            && name.to_str() != Some("..")
+        {
             reply.entry(&TTL, &HELLO_TXT_ATTR, 0);
         } else {
             reply.error(ENOENT);
@@ -142,26 +155,46 @@ impl Filesystem for HelloFS {
             return;
         }
 
+        let releases = self.state.releases(&self.owner, &self.repo).unwrap();
+
+        let tags = releases
+            .into_iter()
+            .map(|r| (2, FileType::RegularFile, r.tag_name));
+
         let entries = vec![
-            (1, FileType::Directory, "."),
-            (1, FileType::Directory, ".."),
-            (2, FileType::RegularFile, "hello.txt"),
-        ];
+            (1, FileType::Directory, ".".to_owned()),
+            (1, FileType::Directory, "..".to_owned()),
+        ]
+        .into_iter()
+        .chain(tags);
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize)
         {
             // i + 1 means the index of the next entry
             reply.add(entry.0, (i + 1) as i64, entry.1, entry.2);
         }
+
         reply.ok();
     }
 }
 
 fn inner_main() -> Result<(), Error> {
     let opt = Opt::from_args();
-    fuse::mount(HelloFS, &opt.mount_path, &[]).context(InvalidMount {
-        mountpoint: &opt.mount_path,
-    })?;
+
+    let creds = match (opt.username, opt.password) {
+        (Some(u), Some(p)) => Some(Credentials::new(u, p)),
+        _ => None,
+    };
+
+    let gh = match creds {
+        Some(creds) => GitHub::with_creds(creds),
+        None => GitHub::new(),
+    };
+
+    fuse::mount(GhaFs::new(gh, opt.owner, opt.repo), &opt.mount_path, &[])
+        .context(InvalidMount {
+            mountpoint: &opt.mount_path,
+        })?;
 
     Ok(())
 }
