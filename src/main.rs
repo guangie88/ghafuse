@@ -111,7 +111,7 @@ impl Filesystem for GhaFs {
             && name.to_str() != Some(".")
             && name.to_str() != Some("..")
         {
-            reply.entry(&TTL, &HELLO_TXT_ATTR, 0);
+            reply.entry(&TTL, &HELLO_DIR_ATTR, 0);
         } else {
             reply.error(ENOENT);
         }
@@ -157,11 +157,11 @@ impl Filesystem for GhaFs {
         let releases = self
             .state
             .releases(&self.owner, &self.repo)
-            .expect("Releases get error");
+            .expect("Releases GET error");
 
         let tags = releases
             .into_iter()
-            .map(|r| (2, FileType::RegularFile, r.tag_name));
+            .map(|r| (1, FileType::Directory, r.tag_name));
 
         let entries = vec![
             (1, FileType::Directory, ".".to_owned()),
