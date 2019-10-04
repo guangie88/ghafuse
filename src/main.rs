@@ -5,8 +5,7 @@ use fuse::{
     ReplyEntry, Request,
 };
 use libc::ENOENT;
-use snafu::{ErrorCompat, OptionExt, ResultExt, Snafu};
-use std::env;
+use snafu::{ErrorCompat, ResultExt, Snafu};
 use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
