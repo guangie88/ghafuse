@@ -26,13 +26,13 @@ pub struct Asset {
 }
 
 pub struct Credentials {
-    pub user: String,
+    pub username: String,
     pub password: String,
 }
 
 impl Credentials {
-    pub fn new(user: String, password: String) -> Credentials {
-        Credentials { user, password }
+    pub fn new(username: String, password: String) -> Credentials {
+        Credentials { username, password }
     }
 }
 
@@ -50,15 +50,25 @@ impl GitHub {
     }
 
     pub fn releases(&self, owner: &str, repo: &str) -> Result<Releases> {
-        let body = reqwest::get(&format!(
+        let client = reqwest::Client::new();
+
+        let req = client.get(&format!(
             "https://api.github.com/repos/{}/{}/releases",
             owner, repo
-        ))
-        .unwrap()
-        .text()
-        .unwrap();
+        ));
 
+        let req = match self.creds {
+            Some(ref creds) => {
+                req.basic_auth(&creds.username, Some(&creds.password))
+            }
+            None => req,
+        };
+
+        // Be careful with: https://developer.github.com/v3/#rate-limiting
+        // Also see: https://developer.github.com/v3/#conditional-requests
+        let body = req.send().expect("Send error").text().expect("Text error");
         let releases = serde_json::from_str(&body)?;
+
         Ok(releases)
     }
 }

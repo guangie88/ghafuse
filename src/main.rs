@@ -155,7 +155,10 @@ impl Filesystem for GhaFs {
             return;
         }
 
-        let releases = self.state.releases(&self.owner, &self.repo).unwrap();
+        let releases = self
+            .state
+            .releases(&self.owner, &self.repo)
+            .expect("Releases get error");
 
         let tags = releases
             .into_iter()
