@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{self, Result};
 use std::collections::HashMap;
 
+const GITHUB_API_URL: &str = "https://api.github.com";
+
 pub type Releases = Vec<Release>;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,6 +53,7 @@ impl EtagCache {
 pub struct GitHub {
     creds: Option<Credentials>,
     etags: HashMap<String, EtagCache>,
+    client: Client,
 }
 
 impl GitHub {
@@ -58,6 +61,7 @@ impl GitHub {
         GitHub {
             creds: None,
             etags: HashMap::new(),
+            client: Client::new(),
         }
     }
 
@@ -65,13 +69,12 @@ impl GitHub {
         GitHub {
             creds: Some(creds),
             etags: HashMap::new(),
+            client: Client::new(),
         }
     }
 
-    pub fn releases(&mut self, owner: &str, repo: &str) -> Result<Releases> {
-        let client = Client::new();
-        let endpoint = format!("repos/{}/{}/releases", owner, repo);
-        let req = client.get(&format!("https://api.github.com/{}", endpoint));
+    fn cached_get(&mut self, endpoint: &str) -> Result<serde_json::Value> {
+        let req = self.client.get(&format!("{}/{}", GITHUB_API_URL, endpoint));
 
         // Inject the username and password if provided
         let req = match self.creds {
@@ -82,7 +85,7 @@ impl GitHub {
         };
 
         // Inject in etag if available
-        let req = match self.etags.get(&endpoint) {
+        let req = match self.etags.get(endpoint) {
             Some(cache) => req.header(header::IF_NONE_MATCH, &cache.hash),
             None => req,
         };
@@ -91,13 +94,10 @@ impl GitHub {
         // Also see: https://developer.github.com/v3/#conditional-requests
         let mut rsp = req.send().expect("Send error");
 
-        let releases = match rsp.status() {
+        let content = match rsp.status() {
             StatusCode::OK => {
                 let content: serde_json::Value =
                     rsp.json().expect("JSON conversion error");
-
-                let releases: Releases =
-                    serde_json::from_value(content.clone())?;
 
                 if let Some(etag) = rsp.headers().get(header::ETAG) {
                     let hash = etag
@@ -105,27 +105,36 @@ impl GitHub {
                         .expect("ETAG string conversion error")
                         .to_owned();
 
-                    self.etags.insert(endpoint, EtagCache::new(hash, content));
+                    self.etags.insert(
+                        endpoint.to_owned(),
+                        EtagCache::new(hash, content.clone()),
+                    );
                 }
 
-                releases
+                content
             }
 
             StatusCode::NOT_MODIFIED => {
                 println!("Not modified!");
 
-                let releases: Releases = match self.etags.get(&endpoint) {
-                    Some(cache) => {
-                        serde_json::from_value(cache.content.clone())?
-                    }
+                let content = match self.etags.get(endpoint) {
+                    Some(cache) => cache.content.clone(),
                     None => unimplemented!(), // this should not happen
                 };
 
-                releases
+                content
             }
 
             _ => unimplemented!(),
         };
+
+        Ok(content)
+    }
+
+    pub fn releases(&mut self, owner: &str, repo: &str) -> Result<Releases> {
+        let endpoint = format!("repos/{}/{}/releases", owner, repo);
+        let content = self.cached_get(&endpoint).expect("Content error");
+        let releases: Releases = serde_json::from_value(content)?;
 
         Ok(releases)
     }
