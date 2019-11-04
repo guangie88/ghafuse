@@ -115,7 +115,7 @@ impl GitHub {
             }
 
             StatusCode::NOT_MODIFIED => {
-                println!("Not modified!");
+                // println!("Not modified!");
 
                 let content = match self.etags.get(endpoint) {
                     Some(cache) => cache.content.clone(),
