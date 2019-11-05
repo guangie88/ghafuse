@@ -144,9 +144,8 @@ impl Filesystem for GhaFs {
         name: &OsStr,
         reply: ReplyEntry,
     ) {
-        // This method is triggered on ls command
-        println!("- Parent: {}", parent);
-        println!("  Name: {}", name.to_string_lossy());
+        // Only called when `ls` in mounted dir
+        println!("lookup, parent: {}, name: {}", parent, name.to_string_lossy());
 
         let releases = self.state.releases(&self.owner, &self.repo).unwrap();
 
@@ -178,7 +177,9 @@ impl Filesystem for GhaFs {
         _size: u32,
         reply: ReplyData,
     ) {
-        // Triggered on cat command on the file
+        // Triggered on `cat` command on the file
+        println!("read, ino: {}", ino);
+
         if ino != 1 {
             let content = format!("{}-{}\n", HELLO_TXT_CONTENT, ino);
             reply.data(&content.as_bytes()[offset as usize..]);
@@ -188,6 +189,9 @@ impl Filesystem for GhaFs {
     }
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
+        // keeps getting called with `readdir`
+        println!("getattr, ino: {}", ino);
+
         match ino {
             1 => reply.attr(&TTL, &HELLO_DIR_ATTR),
             x @ _ => reply.attr(&TTL, &create_file_attr(x)),
@@ -202,6 +206,9 @@ impl Filesystem for GhaFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) {
+        // keeps getting called with `getattr`
+        println!("readdir, ino: {}", ino);
+
         // Root is ino == 1
         if ino != 1 {
             reply.error(ENOENT);
