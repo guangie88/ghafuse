@@ -69,41 +69,24 @@ const HELLO_DIR_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
-// fn create_tag_attr(ino: u64) -> FileAttr {
-//     FileAttr {
-//         ino,
-//         size: 0,
-//         blocks: 1,
-//         atime: UNIX_EPOCH, // 1970-01-01 00:00:00
-//         mtime: UNIX_EPOCH,
-//         ctime: UNIX_EPOCH,
-//         crtime: UNIX_EPOCH,
-//         kind: FileType::Directory,
-//         perm: 0o755,
-//         nlink: 1,
-//         uid: 501,
-//         gid: 20,
-//         rdev: 0,
-//         flags: 0,
-//     }
-// }
-
-// const HELLO_TXT_ATTR: FileAttr = FileAttr {
-//     ino: 2,
-//     size: 13,
-//     blocks: 1,
-//     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
-//     mtime: UNIX_EPOCH,
-//     ctime: UNIX_EPOCH,
-//     crtime: UNIX_EPOCH,
-//     kind: FileType::RegularFile,
-//     perm: 0o644,
-//     nlink: 1,
-//     uid: 501,
-//     gid: 20,
-//     rdev: 0,
-//     flags: 0,
-// };
+fn create_dir_attr(ino: u64) -> FileAttr {
+    FileAttr {
+        ino,
+        size: 0,
+        blocks: 1,
+        atime: UNIX_EPOCH, // 1970-01-01 00:00:00
+        mtime: UNIX_EPOCH,
+        ctime: UNIX_EPOCH,
+        crtime: UNIX_EPOCH,
+        kind: FileType::Directory,
+        perm: 0o755,
+        nlink: 2,
+        uid: 501,
+        gid: 20,
+        rdev: 0,
+        flags: 0,
+    }
+}
 
 fn create_file_attr(ino: u64) -> FileAttr {
     FileAttr {
@@ -145,12 +128,19 @@ impl Filesystem for GhaFs {
         reply: ReplyEntry,
     ) {
         // Only called when `ls` in mounted dir
-        println!("lookup, parent: {}, name: {}", parent, name.to_string_lossy());
+        println!(
+            "lookup, parent: {}, name: {}",
+            parent,
+            name.to_string_lossy()
+        );
 
-        let releases = self.state.releases(&self.owner, &self.repo).unwrap();
+        let releases = self
+            .state
+            .releases(&self.owner, &self.repo)
+            .expect("lookup.releases GET error");
 
         if parent == 1 {
-            let name = name.to_str().unwrap();
+            let name = name.to_str().expect("lookup.name.to_str error");
             let find_res = releases
                 .into_iter()
                 .enumerate()
@@ -159,12 +149,12 @@ impl Filesystem for GhaFs {
             match find_res {
                 Some((idx, _)) => {
                     // println!("{} has index {}", name, idx);
-                    reply.entry(&TTL, &create_file_attr(idx as u64 + 2), 0);
+                    reply.entry(&TTL, &create_dir_attr(idx as u64 + 2), 0);
                 }
                 _ => reply.error(ENOENT),
             }
         } else {
-            reply.error(ENOENT);
+            // reply.error(ENOENT);
         }
     }
 
@@ -207,29 +197,38 @@ impl Filesystem for GhaFs {
         mut reply: ReplyDirectory,
     ) {
         // keeps getting called with `getattr`
+        // does get called when in subdir with the entered dir's inode
+        // This should be the function to fully traverse the tags -> assets
+        // so that all the inodes can be allocated and be saved as state
+        // . should always point to its own ino
+        // .. should always point to parent, which is always 1 for GitHub case
+        // but .. should point to the original mount dir's parent
         println!("readdir, ino: {}", ino);
-
-        // Root is ino == 1
-        if ino != 1 {
-            reply.error(ENOENT);
-            return;
-        }
 
         let releases = self
             .state
             .releases(&self.owner, &self.repo)
-            .expect("Releases GET error");
+            .expect("readdir.releases GET error");
 
-        let tags = releases.into_iter().enumerate().map(|(idx, r)| {
-            ((idx + 2) as u64, FileType::RegularFile, r.tag_name)
-        });
+        // Root has ino 1
+        let tags = if ino == 1 {
+            releases
+                .into_iter()
+                .enumerate()
+                .map(|(idx, r)| {
+                    ((idx + 2) as u64, FileType::Directory, r.tag_name)
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         let entries = vec![
-            (1, FileType::Directory, ".".to_owned()),
+            (ino, FileType::Directory, ".".to_owned()),
             (1, FileType::Directory, "..".to_owned()),
         ]
         .into_iter()
-        .chain(tags);
+        .chain(tags.into_iter());
 
         for (i, entry) in entries.into_iter().enumerate().skip(offset as usize)
         {
