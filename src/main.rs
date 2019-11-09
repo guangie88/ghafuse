@@ -6,12 +6,14 @@ use fuse::{
 };
 use libc::ENOENT;
 use snafu::{ErrorCompat, ResultExt, Snafu};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
 use structopt::StructOpt;
 
-use crate::github::{Credentials, GitHub};
+use crate::github::{Credentials, GitHub, Release};
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -107,15 +109,73 @@ fn create_file_attr(ino: u64) -> FileAttr {
     }
 }
 
+type AssetMappings = HashMap<String, u32>;
+
+struct ReleaseMapping {
+    id: u32,
+    asset_mappings: AssetMappings,
+}
+
+impl ReleaseMapping {
+    fn new(id: u32, asset_mappings: AssetMappings) -> ReleaseMapping {
+        ReleaseMapping { id, asset_mappings }
+    }
+}
+
+type ReleaseMappings = HashMap<String, ReleaseMapping>;
+
+fn generate_release_mappings(releases: &[Release]) -> ReleaseMappings {
+    let mapping = releases
+        .iter()
+        .map(|release| {
+            let asset_mappings = release
+                .assets
+                .iter()
+                .map(|asset| (asset.name.clone(), asset.id))
+                .collect();
+
+            let release_mapping =
+                ReleaseMapping::new(release.id, asset_mappings);
+
+            (release.tag_name.to_owned(), release_mapping)
+        })
+        .collect();
+
+    mapping
+}
+
+fn find_release_mapping(
+    release_mappings: &ReleaseMappings,
+    id: u64,
+) -> Option<&ReleaseMapping> {
+    release_mappings
+        .values()
+        .find(|release_mapping| release_mapping.id as u64 + 1 == id)
+}
+
 struct GhaFs {
-    state: GitHub,
-    owner: String,
-    repo: String,
+    // state: GitHub,
+    // owner: String,
+    // repo: String,
+    releases: Arc<RwLock<Vec<Release>>>,
+    release_mappings: ReleaseMappings,
 }
 
 impl GhaFs {
-    fn new(state: GitHub, owner: String, repo: String) -> GhaFs {
-        GhaFs { state, owner, repo }
+    fn new(mut state: GitHub, owner: String, repo: String) -> GhaFs {
+        let releases = state
+            .releases(&owner, &repo)
+            .expect("lookup.releases GET error");
+
+        let release_mappings = generate_release_mappings(&releases);
+
+        GhaFs {
+            // state,
+            // owner,
+            // repo,
+            releases: Arc::new(RwLock::new(releases)),
+            release_mappings,
+        }
     }
 }
 
@@ -134,27 +194,36 @@ impl Filesystem for GhaFs {
             name.to_string_lossy()
         );
 
-        let releases = self
-            .state
-            .releases(&self.owner, &self.repo)
-            .expect("lookup.releases GET error");
+        // let releases = self.releases.clone();
+        // let releases = releases.read().expect("Unable to read-lock releases");
 
         if parent == 1 {
             let name = name.to_str().expect("lookup.name.to_str error");
-            let find_res = releases
-                .into_iter()
-                .enumerate()
-                .find(|(_, r)| name == &r.tag_name);
+            let release_mapping = self.release_mappings.get(name);
 
-            match find_res {
-                Some((idx, _)) => {
+            match release_mapping {
+                Some(ReleaseMapping {
+                    id,
+                    asset_mappings: _,
+                }) => {
                     // println!("{} has index {}", name, idx);
-                    reply.entry(&TTL, &create_dir_attr(idx as u64 + 2), 0);
+                    reply.entry(&TTL, &create_dir_attr(*id as u64 + 1), 0);
                 }
                 _ => reply.error(ENOENT),
             }
         } else {
-            // reply.error(ENOENT);
+            let release_mapping =
+                find_release_mapping(&self.release_mappings, parent);
+
+            match release_mapping {
+                Some(ReleaseMapping {
+                    id,
+                    asset_mappings: _,
+                }) => {
+                    reply.entry(&TTL, &create_file_attr(*id as u64 + 1), 0);
+                }
+                _ => reply.error(ENOENT),
+            }
         }
     }
 
@@ -205,22 +274,47 @@ impl Filesystem for GhaFs {
         // but .. should point to the original mount dir's parent
         println!("readdir, ino: {}", ino);
 
-        let releases = self
-            .state
-            .releases(&self.owner, &self.repo)
-            .expect("readdir.releases GET error");
+        // let releases = self
+        //     .state
+        //     .releases(&self.owner, &self.repo)
+        //     .expect("readdir.releases GET error");
+
+        // let releases = self.releases.clone();
+        // let releases = releases.read().expect("Unable to read-lock releases");
+
+        // release = self.mapping.iter();
 
         // Root has ino 1
         let tags = if ino == 1 {
-            releases
-                .into_iter()
-                .enumerate()
-                .map(|(idx, r)| {
-                    ((idx + 2) as u64, FileType::Directory, r.tag_name)
+            self.release_mappings
+                .iter()
+                .map(|(name, release_mapping)| {
+                    (
+                        release_mapping.id as u64 + 1,
+                        FileType::Directory,
+                        name.clone(),
+                    )
                 })
                 .collect()
         } else {
-            vec![]
+            let release_mapping =
+                find_release_mapping(&self.release_mappings, ino);
+
+            if let Some(release_mapping) = release_mapping {
+                release_mapping
+                    .asset_mappings
+                    .iter()
+                    .map(|(asset_name, asset_id)| {
+                        (
+                            *asset_id as u64 + 1,
+                            FileType::RegularFile,
+                            asset_name.clone(),
+                        )
+                    })
+                    .collect()
+            } else {
+                vec![]
+            }
         };
 
         let entries = vec![
