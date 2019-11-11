@@ -8,6 +8,7 @@ use libc::ENOENT;
 use snafu::{ErrorCompat, ResultExt, Snafu};
 use std::collections::HashMap;
 use std::ffi::OsStr;
+use std::iter::once;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, UNIX_EPOCH};
@@ -85,7 +86,7 @@ fn create_dir_attr(ino: u64) -> FileAttr {
         nlink: 2,
         uid: 501,
         gid: 20,
-        rdev: 0,
+        rdev: ino as u32,
         flags: 0,
     }
 }
@@ -104,38 +105,69 @@ fn create_file_attr(ino: u64) -> FileAttr {
         nlink: 1,
         uid: 501,
         gid: 20,
-        rdev: 0,
+        rdev: ino as u32,
         flags: 0,
     }
 }
 
-type AssetMappings = HashMap<String, u32>;
+#[derive(Debug, Copy, Clone)]
+struct IdOffset {
+    id: u64,
+    offset: i64,
+}
 
+impl IdOffset {
+    fn new(id: u64, offset: i64) -> IdOffset {
+        IdOffset { id, offset }
+    }
+}
+
+type AssetMappings = HashMap<String, IdOffset>;
+
+#[derive(Debug)]
 struct ReleaseMapping {
-    id: u32,
+    id_offset: IdOffset,
     asset_mappings: AssetMappings,
 }
 
 impl ReleaseMapping {
-    fn new(id: u32, asset_mappings: AssetMappings) -> ReleaseMapping {
-        ReleaseMapping { id, asset_mappings }
+    fn new(
+        id_offset: IdOffset,
+        asset_mappings: AssetMappings,
+    ) -> ReleaseMapping {
+        ReleaseMapping {
+            id_offset,
+            asset_mappings,
+        }
     }
 }
 
 type ReleaseMappings = HashMap<String, ReleaseMapping>;
 
 fn generate_release_mappings(releases: &[Release]) -> ReleaseMappings {
+    let mut offset = 0;
+
     let mapping = releases
         .iter()
         .map(|release| {
             let asset_mappings = release
                 .assets
                 .iter()
-                .map(|asset| (asset.name.clone(), asset.id))
+                .map(|asset| {
+                    offset += 1;
+                    (
+                        asset.name.clone(),
+                        IdOffset::new(asset.id as u64 + 1, offset),
+                    )
+                })
                 .collect();
 
-            let release_mapping =
-                ReleaseMapping::new(release.id, asset_mappings);
+            offset += 1;
+
+            let release_mapping = ReleaseMapping::new(
+                IdOffset::new(release.id as u64 + 1, offset),
+                asset_mappings,
+            );
 
             (release.tag_name.to_owned(), release_mapping)
         })
@@ -150,9 +182,10 @@ fn find_release_mapping(
 ) -> Option<&ReleaseMapping> {
     release_mappings
         .values()
-        .find(|release_mapping| release_mapping.id as u64 + 1 == id)
+        .find(|release_mapping| release_mapping.id_offset.id == id)
 }
 
+#[derive(Debug)]
 struct GhaFs {
     // state: GitHub,
     // owner: String,
@@ -188,11 +221,11 @@ impl Filesystem for GhaFs {
         reply: ReplyEntry,
     ) {
         // Only called when `ls` in mounted dir
-        println!(
-            "lookup, parent: {}, name: {}",
-            parent,
-            name.to_string_lossy()
-        );
+        // println!(
+        //     "lookup, parent: {}, name: {}",
+        //     parent,
+        //     name.to_string_lossy()
+        // );
 
         // let releases = self.releases.clone();
         // let releases = releases.read().expect("Unable to read-lock releases");
@@ -203,11 +236,11 @@ impl Filesystem for GhaFs {
 
             match release_mapping {
                 Some(ReleaseMapping {
-                    id,
+                    id_offset,
                     asset_mappings: _,
                 }) => {
                     // println!("{} has index {}", name, idx);
-                    reply.entry(&TTL, &create_dir_attr(*id as u64 + 1), 0);
+                    reply.entry(&TTL, &create_dir_attr(id_offset.id), 0);
                 }
                 _ => reply.error(ENOENT),
             }
@@ -215,14 +248,20 @@ impl Filesystem for GhaFs {
             let release_mapping =
                 find_release_mapping(&self.release_mappings, parent);
 
+            // println!("lookup not in parent!");
+
             match release_mapping {
                 Some(ReleaseMapping {
-                    id,
+                    id_offset,
                     asset_mappings: _,
                 }) => {
-                    reply.entry(&TTL, &create_file_attr(*id as u64 + 1), 0);
+                    // println!("> lookup not in parent found!");
+                    reply.entry(&TTL, &create_file_attr(id_offset.id), 0);
                 }
-                _ => reply.error(ENOENT),
+                _ => {
+                    // println!("> lookup not in parent NOT found!");
+                    reply.error(ENOENT);
+                }
             }
         }
     }
@@ -237,7 +276,7 @@ impl Filesystem for GhaFs {
         reply: ReplyData,
     ) {
         // Triggered on `cat` command on the file
-        println!("read, ino: {}", ino);
+        // println!("read, ino: {}", ino);
 
         if ino != 1 {
             let content = format!("{}-{}\n", HELLO_TXT_CONTENT, ino);
@@ -249,7 +288,7 @@ impl Filesystem for GhaFs {
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         // keeps getting called with `readdir`
-        println!("getattr, ino: {}", ino);
+        // println!("getattr, ino: {}", ino);
 
         match ino {
             1 => reply.attr(&TTL, &HELLO_DIR_ATTR),
@@ -272,7 +311,7 @@ impl Filesystem for GhaFs {
         // . should always point to its own ino
         // .. should always point to parent, which is always 1 for GitHub case
         // but .. should point to the original mount dir's parent
-        println!("readdir, ino: {}", ino);
+        println!("readdir, ino: {}, offset: {}", ino, offset);
 
         // let releases = self
         //     .state
@@ -285,49 +324,80 @@ impl Filesystem for GhaFs {
         // release = self.mapping.iter();
 
         // Root has ino 1
-        let tags = if ino == 1 {
+        let entries = if ino == 1 {
             self.release_mappings
                 .iter()
                 .map(|(name, release_mapping)| {
                     (
-                        release_mapping.id as u64 + 1,
+                        release_mapping.id_offset,
                         FileType::Directory,
                         name.clone(),
                     )
                 })
+                .chain(once((
+                    IdOffset::new(1, 1),
+                    FileType::Directory,
+                    ".".to_owned(),
+                )))
+                .chain(once((
+                    IdOffset::new(1, 1),
+                    FileType::Directory,
+                    "..".to_owned(),
+                )))
                 .collect()
         } else {
+            // println!("readdir ino not 1");
             let release_mapping =
                 find_release_mapping(&self.release_mappings, ino);
 
             if let Some(release_mapping) = release_mapping {
+                // println!("readdir ino not 1 found release_mapping");
                 release_mapping
                     .asset_mappings
                     .iter()
-                    .map(|(asset_name, asset_id)| {
+                    .map(|(asset_name, &asset_id_offset)| {
                         (
-                            *asset_id as u64 + 1,
+                            asset_id_offset,
                             FileType::RegularFile,
                             asset_name.clone(),
                         )
                     })
+                    .chain(once((
+                        IdOffset::new(ino, release_mapping.id_offset.offset),
+                        FileType::Directory,
+                        ".".to_owned(),
+                    )))
+                    .chain(once((
+                        IdOffset::new(1, 1),
+                        FileType::Directory,
+                        "..".to_owned(),
+                    )))
                     .collect()
             } else {
+                // println!("readdir ino not 1 NOT found release_mapping");
                 vec![]
             }
         };
 
-        let entries = vec![
-            (ino, FileType::Directory, ".".to_owned()),
-            (1, FileType::Directory, "..".to_owned()),
-        ]
-        .into_iter()
-        .chain(tags.into_iter());
+        // println!("{:#?}", entries);
 
-        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize)
+        // let entries = vec![
+        //     (&dot_id_offset, FileType::Directory, ".".to_owned()),
+        //     (&dotdot_id_offset, FileType::Directory, "..".to_owned()),
+        // ]
+        // .into_iter()
+        // .chain(tags.into_iter());
+
+        for entry in entries.into_iter().skip(offset as usize)
+        // for (_, entry) in entries.into_iter().enumerate()
         {
-            // i + 1 means the index of the next entry
-            reply.add(entry.0, (i + 1) as i64, entry.1, entry.2);
+            // https://github.com/libfuse/libfuse/blob/master/include/fuse.h#L72
+            // For directory that does seeking (i.e. ls command)
+            // offset cannot be zero
+            // const NO_OFFSET: i64 = 0;
+            let (IdOffset { id, offset }, kind, name) = entry;
+            // let (id_offset, kind, name) = entry;
+            reply.add(id, offset, kind, name);
         }
 
         reply.ok();
