@@ -145,7 +145,7 @@ impl ReleaseMapping {
 type ReleaseMappings = HashMap<String, ReleaseMapping>;
 
 fn generate_release_mappings(releases: &[Release]) -> ReleaseMappings {
-    let mut offset = 0;
+    let mut offset = 10000;
 
     let mapping = releases
         .iter()
@@ -288,11 +288,20 @@ impl Filesystem for GhaFs {
 
     fn getattr(&mut self, _req: &Request, ino: u64, reply: ReplyAttr) {
         // keeps getting called with `readdir`
-        // println!("getattr, ino: {}", ino);
+        println!("getattr, ino: {}", ino);
 
         match ino {
             1 => reply.attr(&TTL, &HELLO_DIR_ATTR),
-            x @ _ => reply.attr(&TTL, &create_file_attr(x)),
+            ino @ _ => {
+                let release_mapping =
+                    find_release_mapping(&self.release_mappings, ino);
+
+                if let Some(_) = release_mapping {
+                    reply.attr(&TTL, &create_dir_attr(ino))
+                } else {
+                    reply.attr(&TTL, &create_file_attr(ino))
+                }
+            }
         }
     }
 
@@ -325,54 +334,58 @@ impl Filesystem for GhaFs {
 
         // Root has ino 1
         let entries = if ino == 1 {
-            self.release_mappings
-                .iter()
-                .map(|(name, release_mapping)| {
-                    (
-                        release_mapping.id_offset,
-                        FileType::Directory,
-                        name.clone(),
-                    )
-                })
-                .chain(once((
-                    IdOffset::new(1, 1),
-                    FileType::Directory,
-                    ".".to_owned(),
-                )))
-                .chain(once((
-                    IdOffset::new(1, 1),
-                    FileType::Directory,
-                    "..".to_owned(),
-                )))
-                .collect()
-        } else {
-            // println!("readdir ino not 1");
-            let release_mapping =
-                find_release_mapping(&self.release_mappings, ino);
-
-            if let Some(release_mapping) = release_mapping {
-                // println!("readdir ino not 1 found release_mapping");
-                release_mapping
-                    .asset_mappings
-                    .iter()
-                    .map(|(asset_name, &asset_id_offset)| {
-                        (
-                            asset_id_offset,
-                            FileType::RegularFile,
-                            asset_name.clone(),
-                        )
-                    })
+            if offset == 0 {
+                once((IdOffset::new(1, 1), FileType::Directory, ".".to_owned()))
                     .chain(once((
-                        IdOffset::new(ino, release_mapping.id_offset.offset),
-                        FileType::Directory,
-                        ".".to_owned(),
-                    )))
-                    .chain(once((
-                        IdOffset::new(1, 1),
+                        IdOffset::new(1, 2),
                         FileType::Directory,
                         "..".to_owned(),
                     )))
+                    .chain(self.release_mappings.iter().map(
+                        |(name, release_mapping)| {
+                            (
+                                release_mapping.id_offset,
+                                FileType::Directory,
+                                name.clone(),
+                            )
+                        },
+                    ))
                     .collect()
+            } else {
+                vec![]
+            }
+        } else {
+            if offset == 0 {
+                // println!("readdir ino not 1");
+                let release_mapping =
+                    find_release_mapping(&self.release_mappings, ino);
+
+                if let Some(release_mapping) = release_mapping {
+                    once((
+                        // IdOffset::new(ino, release_mapping.id_offset.offset),
+                        IdOffset::new(ino, ino as i64 + 1),
+                        FileType::Directory,
+                        ".".to_owned(),
+                    ))
+                    .chain(once((
+                        // IdOffset::new(1, 1),
+                        IdOffset::new(1, ino as i64 + 2),
+                        FileType::Directory,
+                        "..".to_owned(),
+                    )))
+                    .chain(release_mapping.asset_mappings.iter().map(
+                        |(asset_name, &asset_id_offset)| {
+                            (
+                                asset_id_offset,
+                                FileType::RegularFile,
+                                asset_name.clone(),
+                            )
+                        },
+                    ))
+                    .collect()
+                } else {
+                    vec![]
+                }
             } else {
                 // println!("readdir ino not 1 NOT found release_mapping");
                 vec![]
