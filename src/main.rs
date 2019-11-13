@@ -55,7 +55,7 @@ struct Opt {
 const TTL: Duration = Duration::from_secs(1); // 1 second
 const HELLO_TXT_CONTENT: &str = "HelloWorld";
 
-const HELLO_DIR_ATTR: FileAttr = FileAttr {
+const ROOT_DIR_ATTR: FileAttr = FileAttr {
     ino: 1,
     size: 0,
     blocks: 0,
@@ -66,8 +66,8 @@ const HELLO_DIR_ATTR: FileAttr = FileAttr {
     kind: FileType::Directory,
     perm: 0o755,
     nlink: 2,
-    uid: 501,
-    gid: 20,
+    uid: 1000,
+    gid: 1000,
     rdev: 0,
     flags: 0,
 };
@@ -83,9 +83,9 @@ fn create_dir_attr(ino: u64) -> FileAttr {
         crtime: UNIX_EPOCH,
         kind: FileType::Directory,
         perm: 0o755,
-        nlink: 2,
-        uid: 501,
-        gid: 20,
+        nlink: 1,
+        uid: 1000,
+        gid: 1000,
         rdev: ino as u32,
         flags: 0,
     }
@@ -103,40 +103,25 @@ fn create_file_attr(ino: u64) -> FileAttr {
         kind: FileType::RegularFile,
         perm: 0o644,
         nlink: 1,
-        uid: 501,
-        gid: 20,
+        uid: 1000,
+        gid: 1000,
         rdev: ino as u32,
         flags: 0,
     }
 }
 
-#[derive(Debug, Copy, Clone)]
-struct IdOffset {
-    id: u64,
-    offset: i64,
-}
-
-impl IdOffset {
-    fn new(id: u64, offset: i64) -> IdOffset {
-        IdOffset { id, offset }
-    }
-}
-
-type AssetMappings = HashMap<String, IdOffset>;
+type AssetMappings = HashMap<String, u64>;
 
 #[derive(Debug)]
 struct ReleaseMapping {
-    id_offset: IdOffset,
+    ino: u64,
     asset_mappings: AssetMappings,
 }
 
 impl ReleaseMapping {
-    fn new(
-        id_offset: IdOffset,
-        asset_mappings: AssetMappings,
-    ) -> ReleaseMapping {
+    fn new(ino: u64, asset_mappings: AssetMappings) -> ReleaseMapping {
         ReleaseMapping {
-            id_offset,
+            ino,
             asset_mappings,
         }
     }
@@ -145,29 +130,17 @@ impl ReleaseMapping {
 type ReleaseMappings = HashMap<String, ReleaseMapping>;
 
 fn generate_release_mappings(releases: &[Release]) -> ReleaseMappings {
-    let mut offset = 10000;
-
     let mapping = releases
         .iter()
         .map(|release| {
             let asset_mappings = release
                 .assets
                 .iter()
-                .map(|asset| {
-                    offset += 1;
-                    (
-                        asset.name.clone(),
-                        IdOffset::new(asset.id as u64 + 1, offset),
-                    )
-                })
+                .map(|asset| (asset.name.clone(), asset.id as u64 + 1))
                 .collect();
 
-            offset += 1;
-
-            let release_mapping = ReleaseMapping::new(
-                IdOffset::new(release.id as u64 + 1, offset),
-                asset_mappings,
-            );
+            let release_mapping =
+                ReleaseMapping::new(release.id as u64 + 1, asset_mappings);
 
             (release.tag_name.to_owned(), release_mapping)
         })
@@ -178,18 +151,15 @@ fn generate_release_mappings(releases: &[Release]) -> ReleaseMappings {
 
 fn find_release_mapping(
     release_mappings: &ReleaseMappings,
-    id: u64,
+    ino: u64,
 ) -> Option<&ReleaseMapping> {
     release_mappings
         .values()
-        .find(|release_mapping| release_mapping.id_offset.id == id)
+        .find(|release_mapping| release_mapping.ino == ino)
 }
 
 #[derive(Debug)]
 struct GhaFs {
-    // state: GitHub,
-    // owner: String,
-    // repo: String,
     releases: Arc<RwLock<Vec<Release>>>,
     release_mappings: ReleaseMappings,
 }
@@ -203,9 +173,6 @@ impl GhaFs {
         let release_mappings = generate_release_mappings(&releases);
 
         GhaFs {
-            // state,
-            // owner,
-            // repo,
             releases: Arc::new(RwLock::new(releases)),
             release_mappings,
         }
@@ -221,14 +188,11 @@ impl Filesystem for GhaFs {
         reply: ReplyEntry,
     ) {
         // Only called when `ls` in mounted dir
-        // println!(
-        //     "lookup, parent: {}, name: {}",
-        //     parent,
-        //     name.to_string_lossy()
-        // );
-
-        // let releases = self.releases.clone();
-        // let releases = releases.read().expect("Unable to read-lock releases");
+        println!(
+            "lookup, parent: {}, name: {}",
+            parent,
+            name.to_string_lossy()
+        );
 
         if parent == 1 {
             let name = name.to_str().expect("lookup.name.to_str error");
@@ -236,30 +200,31 @@ impl Filesystem for GhaFs {
 
             match release_mapping {
                 Some(ReleaseMapping {
-                    id_offset,
+                    ino,
                     asset_mappings: _,
                 }) => {
-                    // println!("{} has index {}", name, idx);
-                    reply.entry(&TTL, &create_dir_attr(id_offset.id), 0);
+                    println!("> root dir lookup for name {}", name);
+                    reply.entry(&TTL, &create_dir_attr(*ino), 0);
                 }
-                _ => reply.error(ENOENT),
+                _ => {
+                    println!("> ERROR root dir lookup for name {}", name);
+                    reply.error(ENOENT);
+                }
             }
         } else {
             let release_mapping =
                 find_release_mapping(&self.release_mappings, parent);
 
-            // println!("lookup not in parent!");
-
             match release_mapping {
                 Some(ReleaseMapping {
-                    id_offset,
+                    ino,
                     asset_mappings: _,
                 }) => {
-                    // println!("> lookup not in parent found!");
-                    reply.entry(&TTL, &create_file_attr(id_offset.id), 0);
+                    println!("> subdir lookup in parent found!");
+                    reply.entry(&TTL, &create_file_attr(*ino), 0);
                 }
                 _ => {
-                    // println!("> lookup not in parent NOT found!");
+                    println!("> ERROR subdir lookup in parent NOT found!");
                     reply.error(ENOENT);
                 }
             }
@@ -276,7 +241,7 @@ impl Filesystem for GhaFs {
         reply: ReplyData,
     ) {
         // Triggered on `cat` command on the file
-        // println!("read, ino: {}", ino);
+        println!("read, ino: {}, offset: {}", ino, offset);
 
         if ino != 1 {
             let content = format!("{}-{}\n", HELLO_TXT_CONTENT, ino);
@@ -291,7 +256,7 @@ impl Filesystem for GhaFs {
         println!("getattr, ino: {}", ino);
 
         match ino {
-            1 => reply.attr(&TTL, &HELLO_DIR_ATTR),
+            1 => reply.attr(&TTL, &ROOT_DIR_ATTR),
             ino @ _ => {
                 let release_mapping =
                     find_release_mapping(&self.release_mappings, ino);
@@ -320,31 +285,17 @@ impl Filesystem for GhaFs {
         // . should always point to its own ino
         // .. should always point to parent, which is always 1 for GitHub case
         // but .. should point to the original mount dir's parent
-        println!("readdir, ino: {}, offset: {}", ino, offset);
-
-        // let releases = self
-        //     .state
-        //     .releases(&self.owner, &self.repo)
-        //     .expect("readdir.releases GET error");
-
-        // let releases = self.releases.clone();
-        // let releases = releases.read().expect("Unable to read-lock releases");
-
-        // release = self.mapping.iter();
+        // println!("readdir, ino: {}, offset: {}", ino, offset);
 
         // Root has ino 1
         let entries = if ino == 1 {
             if offset == 0 {
-                once((IdOffset::new(1, 1), FileType::Directory, ".".to_owned()))
-                    .chain(once((
-                        IdOffset::new(1, 2),
-                        FileType::Directory,
-                        "..".to_owned(),
-                    )))
+                once((1, FileType::Directory, ".".to_owned()))
+                    .chain(once((1, FileType::Directory, "..".to_owned())))
                     .chain(self.release_mappings.iter().map(
                         |(name, release_mapping)| {
                             (
-                                release_mapping.id_offset,
+                                release_mapping.ino,
                                 FileType::Directory,
                                 name.clone(),
                             )
@@ -356,61 +307,38 @@ impl Filesystem for GhaFs {
             }
         } else {
             if offset == 0 {
-                // println!("readdir ino not 1");
                 let release_mapping =
                     find_release_mapping(&self.release_mappings, ino);
 
                 if let Some(release_mapping) = release_mapping {
-                    once((
-                        // IdOffset::new(ino, release_mapping.id_offset.offset),
-                        IdOffset::new(ino, ino as i64 + 1),
-                        FileType::Directory,
-                        ".".to_owned(),
-                    ))
-                    .chain(once((
-                        // IdOffset::new(1, 1),
-                        IdOffset::new(1, ino as i64 + 2),
-                        FileType::Directory,
-                        "..".to_owned(),
-                    )))
-                    .chain(release_mapping.asset_mappings.iter().map(
-                        |(asset_name, &asset_id_offset)| {
-                            (
-                                asset_id_offset,
-                                FileType::RegularFile,
-                                asset_name.clone(),
-                            )
-                        },
-                    ))
-                    .collect()
+                    once((ino, FileType::Directory, ".".to_owned()))
+                        .chain(once((1, FileType::Directory, "..".to_owned())))
+                        .chain(release_mapping.asset_mappings.iter().map(
+                            |(asset_name, &asset_id_offset)| {
+                                (
+                                    asset_id_offset,
+                                    FileType::RegularFile,
+                                    asset_name.clone(),
+                                )
+                            },
+                        ))
+                        .collect()
                 } else {
                     vec![]
                 }
             } else {
-                // println!("readdir ino not 1 NOT found release_mapping");
                 vec![]
             }
         };
 
-        // println!("{:#?}", entries);
-
-        // let entries = vec![
-        //     (&dot_id_offset, FileType::Directory, ".".to_owned()),
-        //     (&dotdot_id_offset, FileType::Directory, "..".to_owned()),
-        // ]
-        // .into_iter()
-        // .chain(tags.into_iter());
-
-        for entry in entries.into_iter().skip(offset as usize)
-        // for (_, entry) in entries.into_iter().enumerate()
+        // for entry in entries.into_iter().skip(offset as usize)
+        for (i, entry) in entries.into_iter().enumerate().skip(offset as usize)
         {
             // https://github.com/libfuse/libfuse/blob/master/include/fuse.h#L72
             // For directory that does seeking (i.e. ls command)
             // offset cannot be zero
-            // const NO_OFFSET: i64 = 0;
-            let (IdOffset { id, offset }, kind, name) = entry;
-            // let (id_offset, kind, name) = entry;
-            reply.add(id, offset, kind, name);
+            let (ino, kind, name) = entry;
+            reply.add(ino, (i + 1) as i64, kind, name);
         }
 
         reply.ok();
