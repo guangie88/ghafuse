@@ -72,10 +72,10 @@ const ROOT_DIR_ATTR: FileAttr = FileAttr {
     flags: 0,
 };
 
-fn create_dir_attr(ino: u64) -> FileAttr {
+fn create_dir_attr(ino: u64, size: u64) -> FileAttr {
     FileAttr {
         ino,
-        size: 0,
+        size,
         blocks: 1,
         atime: UNIX_EPOCH, // 1970-01-01 00:00:00
         mtime: UNIX_EPOCH,
@@ -91,10 +91,10 @@ fn create_dir_attr(ino: u64) -> FileAttr {
     }
 }
 
-fn create_file_attr(ino: u64) -> FileAttr {
+fn create_file_attr(ino: u64, size: u64) -> FileAttr {
     FileAttr {
         ino,
-        size: 13,
+        size,
         blocks: 1,
         atime: UNIX_EPOCH, // 1970-01-01 00:00:00
         mtime: UNIX_EPOCH,
@@ -204,7 +204,7 @@ impl Filesystem for GhaFs {
                     asset_mappings: _,
                 }) => {
                     println!("> root dir lookup for name {}", name);
-                    reply.entry(&TTL, &create_dir_attr(*ino), 0);
+                    reply.entry(&TTL, &create_dir_attr(*ino, 0), 0);
                 }
                 _ => {
                     println!("> ERROR root dir lookup for name {}", name);
@@ -221,7 +221,7 @@ impl Filesystem for GhaFs {
                     asset_mappings: _,
                 }) => {
                     println!("> subdir lookup in parent found!");
-                    reply.entry(&TTL, &create_file_attr(*ino), 0);
+                    reply.entry(&TTL, &create_file_attr(*ino, 11), 0);
                 }
                 _ => {
                     println!("> ERROR subdir lookup in parent NOT found!");
@@ -244,7 +244,7 @@ impl Filesystem for GhaFs {
         println!("read, ino: {}, offset: {}", ino, offset);
 
         if ino != 1 {
-            let content = format!("{}-{}\n", HELLO_TXT_CONTENT, ino);
+            let content = format!("{}\n", HELLO_TXT_CONTENT);
             reply.data(&content.as_bytes()[offset as usize..]);
         } else {
             reply.error(ENOENT);
@@ -262,9 +262,9 @@ impl Filesystem for GhaFs {
                     find_release_mapping(&self.release_mappings, ino);
 
                 if let Some(_) = release_mapping {
-                    reply.attr(&TTL, &create_dir_attr(ino))
+                    reply.attr(&TTL, &create_dir_attr(ino, 11))
                 } else {
-                    reply.attr(&TTL, &create_file_attr(ino))
+                    reply.attr(&TTL, &create_file_attr(ino, 11))
                 }
             }
         }
