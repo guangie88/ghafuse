@@ -221,7 +221,7 @@ impl Filesystem for GhaFs {
                     asset_mappings: _,
                 }) => {
                     println!("> subdir lookup in parent found!");
-                    reply.entry(&TTL, &create_file_attr(*ino, 11), 0);
+                    reply.entry(&TTL, &create_file_attr(*ino, 10), 0);
                 }
                 _ => {
                     println!("> ERROR subdir lookup in parent NOT found!");
@@ -244,7 +244,7 @@ impl Filesystem for GhaFs {
         println!("read, ino: {}, offset: {}", ino, offset);
 
         if ino != 1 {
-            let content = format!("{}\n", HELLO_TXT_CONTENT);
+            let content = format!("{}", HELLO_TXT_CONTENT);
             reply.data(&content.as_bytes()[offset as usize..]);
         } else {
             reply.error(ENOENT);
@@ -262,9 +262,9 @@ impl Filesystem for GhaFs {
                     find_release_mapping(&self.release_mappings, ino);
 
                 if let Some(_) = release_mapping {
-                    reply.attr(&TTL, &create_dir_attr(ino, 11))
+                    reply.attr(&TTL, &create_dir_attr(ino, 10))
                 } else {
-                    reply.attr(&TTL, &create_file_attr(ino, 11))
+                    reply.attr(&TTL, &create_file_attr(ino, 10))
                 }
             }
         }
@@ -289,43 +289,42 @@ impl Filesystem for GhaFs {
 
         // Root has ino 1
         let entries = if ino == 1 {
-            if offset == 0 {
-                once((1, FileType::Directory, ".".to_owned()))
-                    .chain(once((1, FileType::Directory, "..".to_owned())))
-                    .chain(self.release_mappings.iter().map(
-                        |(name, release_mapping)| {
-                            (
-                                release_mapping.ino,
-                                FileType::Directory,
-                                name.clone(),
-                            )
-                        },
-                    ))
-                    .collect()
-            } else {
-                vec![]
-            }
+            once((1, FileType::Directory, ".".to_owned()))
+                .chain(once((1, FileType::Directory, "..".to_owned())))
+                .chain(self.release_mappings.iter().map(
+                    |(name, release_mapping)| {
+                        (release_mapping.ino, FileType::Directory, name.clone())
+                    },
+                ))
+                .collect()
         } else {
-            if offset == 0 {
-                let release_mapping =
-                    find_release_mapping(&self.release_mappings, ino);
+            let release_mapping =
+                find_release_mapping(&self.release_mappings, ino);
 
-                if let Some(release_mapping) = release_mapping {
-                    once((ino, FileType::Directory, ".".to_owned()))
-                        .chain(once((1, FileType::Directory, "..".to_owned())))
-                        .chain(release_mapping.asset_mappings.iter().map(
-                            |(asset_name, &asset_id_offset)| {
-                                (
-                                    asset_id_offset,
-                                    FileType::RegularFile,
-                                    asset_name.clone(),
-                                )
-                            },
-                        ))
-                        .collect()
-                } else {
-                    vec![]
-                }
+            if let Some(release_mapping) = release_mapping {
+                release_mapping
+                    .asset_mappings
+                    .iter()
+                    .map(|(asset_name, &asset_id_offset)| {
+                        (
+                            asset_id_offset,
+                            FileType::RegularFile,
+                            asset_name.clone(),
+                        )
+                    })
+                    .collect()
+            // once((ino, FileType::Directory, ".".to_owned()))
+            //     .chain(once((1, FileType::Directory, "..".to_owned())))
+            //     .chain(release_mapping.asset_mappings.iter().map(
+            //         |(asset_name, &asset_id_offset)| {
+            //             (
+            //                 asset_id_offset,
+            //                 FileType::RegularFile,
+            //                 asset_name.clone(),
+            //             )
+            //         },
+            //     ))
+            //     .collect()
             } else {
                 vec![]
             }
