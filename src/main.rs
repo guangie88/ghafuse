@@ -2,7 +2,7 @@ mod github;
 
 use fuse::{
     FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory,
-    ReplyEntry, Request,
+    ReplyEntry, ReplyOpen, Request,
 };
 use libc::ENOENT;
 use snafu::{ErrorCompat, ResultExt, Snafu};
@@ -86,7 +86,7 @@ fn create_dir_attr(ino: u64, size: u64) -> FileAttr {
         nlink: 1,
         uid: 1000,
         gid: 1000,
-        rdev: ino as u32,
+        rdev: 0,
         flags: 0,
     }
 }
@@ -105,7 +105,7 @@ fn create_file_attr(ino: u64, size: u64) -> FileAttr {
         nlink: 1,
         uid: 1000,
         gid: 1000,
-        rdev: ino as u32,
+        rdev: 0,
         flags: 0,
     }
 }
@@ -270,6 +270,17 @@ impl Filesystem for GhaFs {
         }
     }
 
+    // fn opendir(
+    //     &mut self,
+    //     _req: &Request<'_>,
+    //     ino: u64,
+    //     _flags: u32,
+    //     reply: ReplyOpen,
+    // ) {
+    //     println!("opendir, ino: {}", ino);
+    //     reply.opened(ino, 0);
+    // }
+
     fn readdir(
         &mut self,
         _req: &Request,
@@ -302,29 +313,18 @@ impl Filesystem for GhaFs {
                 find_release_mapping(&self.release_mappings, ino);
 
             if let Some(release_mapping) = release_mapping {
-                release_mapping
-                    .asset_mappings
-                    .iter()
-                    .map(|(asset_name, &asset_id_offset)| {
-                        (
-                            asset_id_offset,
-                            FileType::RegularFile,
-                            asset_name.clone(),
-                        )
-                    })
+                once((ino, FileType::Directory, ".".to_owned()))
+                    .chain(once((1, FileType::Directory, "..".to_owned())))
+                    .chain(release_mapping.asset_mappings.iter().map(
+                        |(asset_name, &asset_id_offset)| {
+                            (
+                                asset_id_offset,
+                                FileType::RegularFile,
+                                asset_name.clone(),
+                            )
+                        },
+                    ))
                     .collect()
-            // once((ino, FileType::Directory, ".".to_owned()))
-            //     .chain(once((1, FileType::Directory, "..".to_owned())))
-            //     .chain(release_mapping.asset_mappings.iter().map(
-            //         |(asset_name, &asset_id_offset)| {
-            //             (
-            //                 asset_id_offset,
-            //                 FileType::RegularFile,
-            //                 asset_name.clone(),
-            //             )
-            //         },
-            //     ))
-            //     .collect()
             } else {
                 vec![]
             }
